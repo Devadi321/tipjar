@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TipJar — Support creators directly via UPI</title>
 <meta name="description" content="TipJar lets fans tip Indian creators directly over UPI. No middlemen, no cuts.">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="preconnect" href="https://vxszwegrpzrzbbwqyovw.supabase.co">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -167,14 +169,26 @@ var currentCreator = null, currentTips = [], selAmount = 0;
 
 async function renderCreator(username) {
   app.innerHTML = '<p class="center muted">Loading…</p>';
+  var timedOut = false;
+  var timer = setTimeout(function () {
+    timedOut = true;
+    app.innerHTML = '<div class="card center"><h2>Taking too long…</h2>' +
+      '<p class="muted">TipJar is taking longer than usual. Check your connection and try again.</p>' +
+      '<button class="btn" onclick="renderCreator(\'' + esc(username) + '\')">Retry</button>' +
+      '<a class="backlink" href="#/">← Create your page</a></div>';
+  }, 10000);
   try {
     var res = await sb.from('creators').select('*').eq('username', username).single();
+    clearTimeout(timer);
+    if (timedOut) return;
     if (res.error || !res.data) throw new Error('notfound');
     currentCreator = res.data;
     drawCreator();
     await refreshTips();
     pollTimer = setInterval(refreshTips, 15000);
   } catch (e) {
+    clearTimeout(timer);
+    if (timedOut) return;
     app.innerHTML = '<div class="card center"><h2>Page not found</h2>' +
       '<p class="muted">No creator with that username yet.</p>' +
       '<a class="backlink" href="#/">← Create your page</a></div>';
