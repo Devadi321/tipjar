@@ -72,6 +72,22 @@
   .hidden { display: none !important; }
   .code { background: #2D1B0E; color: #ffd9a0; font-family: monospace; font-size: 22px;
           letter-spacing: 3px; text-align: center; padding: 12px; border-radius: 10px; margin-top: 10px; }
+  .tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 99px;
+         margin-left: 6px; vertical-align: middle; }
+  .tag.wait { background: #fdf0d5; color: #92610f; }
+  .tag.ok { background: #e6f9ec; color: #166534; }
+  .wallitem.newtip { animation: newtip 1.8s ease; border-radius: 10px; }
+  @keyframes newtip { 0% { background: #fff3e6; } 100% { background: transparent; } }
+  #celebrate { position: fixed; inset: 0; background: rgba(45,27,14,.93); z-index: 50; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+  #celebrate .cjar { font-size: 92px; animation: pop .5s ease; }
+  @keyframes pop { 0% { transform: scale(.3); } 70% { transform: scale(1.15); } 100% { transform: scale(1); } }
+  #celebrate h2 { color: #fff; font-size: 28px; margin-top: 10px; }
+  #celebrate p { color: #ffd9a0; margin-top: 8px; font-size: 15px; }
+  .coin, .confetti { position: absolute; top: -40px; animation-name: fall; animation-timing-function: linear; animation-fill-mode: forwards; }
+  .coin { font-size: 26px; }
+  .confetti { width: 9px; height: 15px; opacity: .95; }
+  @keyframes fall { to { transform: translateY(112vh) rotate(720deg); } }
 </style>
 </head>
 <body>
@@ -112,6 +128,8 @@ window.addEventListener('hashchange', route);
 function route() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   var h = location.hash || '#/';
+  var cm = h.match(/^#\/confirm\/([A-Za-z0-9]+)$/);
+  if (cm) return renderConfirm(cm[1]);
   var m = h.match(/^#\/([a-z0-9-]+)$/);
   if (m) renderCreator(m[1]);
   else renderHome();
@@ -154,11 +172,20 @@ async function doCreate() {
     var row = { username: username, display_name: display_name, bio: bio || null,
                 upi_id: upi_id, goal_title: goal_title || null,
                 goal_amount: isNaN(goal_amount) ? null : goal_amount };
-    var res = await sb.from('creators').insert(row).select('username').single();
+    var res = await sb.from('creators').insert(row).select('id,username').single();
     if (res.error) throw res.error;
+    var token = '';
+    try {
+      var bytes = new Uint8Array(12);
+      crypto.getRandomValues(bytes);
+      for (var bi = 0; bi < bytes.length; bi++) token += ('0' + bytes[bi].toString(16)).slice(-2);
+      await sb.rpc('set_creator_token', { p_creator_id: res.data.id, p_token: token });
+    } catch (e2) { token = ''; }
     var url = location.origin + location.pathname + '#/' + res.data.username;
+    var clink = location.origin + location.pathname + '#/confirm/' + token;
     var o = document.getElementById('o1');
-    o.innerHTML = 'Your page is live:<br><a href="#/' + esc(res.data.username) + '" style="color:#166534;font-weight:700">' + esc(url) + '</a>';
+    o.innerHTML = 'Your page is live:<br><a href="#/' + esc(res.data.username) + '" style="color:#166534;font-weight:700">' + esc(url) + '</a>' +
+      (token ? '<br><br><b>Save your confirmation link</b> — supporters\' tips wait for your one-tap confirmation here (no login needed). Keep it private:<br>' + esc(clink) : '');
     o.style.display = 'block';
     btn.textContent = 'Done ✓';
   } catch (err) {
@@ -206,8 +233,8 @@ function drawCreator() {
     '<div class="card"><div class="profile"><div class="avatar">' + initial + '</div>' +
     '<h2>' + esc(c.display_name) + '</h2>' +
     (c.bio ? '<p class="muted">' + esc(c.bio) + '</p>' : '') + '</div>' +
-    (c.goal_amount ? '<div style="margin-top:6px"><div class="goalnums"><span><b id="g-raised">₹0</b> raised</span><span>Goal: <b>' + rs(c.goal_amount) + '</b>' + (c.goal_title ? ' · ' + esc(c.goal_title) : '') + '</span></div>' +
-    '<div class="goalbar"><div id="g-bar" style="width:0%"></div></div></div>' : '') +
+    (c.goal_amount ? '<div style="margin-top:6px"><div class="goalnums"><span><b id="g-raised">₹0</b> confirmed</span><span>Goal: <b>' + rs(c.goal_amount) + '</b>' + (c.goal_title ? ' · ' + esc(c.goal_title) : '') + '</span></div>' +
+    '<div class="goalbar"><div id="g-bar" style="width:0%"></div></div><div class="muted" id="g-pending" style="font-size:13px;margin-top:2px"></div></div>' : '') +
     '</div>' +
     '<div class="card"><h2>Send a tip</h2><p class="muted">Pick an amount — it goes straight to ' + esc(c.display_name) + '’s UPI.</p>' +
     '<div class="amounts">' +
@@ -222,7 +249,12 @@ function drawCreator() {
     '<div class="card hidden" id="paycard"><h2>Scan to pay ' + '<span id="qr-amt"></span></h2>' +
     '<div id="qrbox"></div>' +
     '<p class="muted center">Scan with GPay / PhonePe / Paytm.<br>Money goes directly to ' + esc(c.display_name) + '.</p>' +
-    '<button class="btn" id="b-paid" onclick="markPaid()">I\'ve paid ✓</button>' +
+    '<button class="btn" id="b-paid" onclick="askUTR()">I\'ve paid ✓</button>' +
+    '<div id="utrbox" class="hidden"><label>Last step — UTR / UPI transaction ID</label>' +
+    '<input id="t-utr" inputmode="numeric" placeholder="12-digit number" maxlength="12">' +
+    '<p class="muted">Find it in your UPI app: open this payment in History — it\'s the 12-digit UTR / Ref No. This keeps ' + esc(c.display_name) + '’s wall free of fake tips.</p>' +
+    '<div class="err" id="e3"></div>' +
+    '<button class="btn" id="b-wall" onclick="submitTip()">Add me to the wall 🎉</button></div>' +
     '<button class="btn secondary" onclick="backToTip()">← Change amount</button></div>' +
     '<div class="card"><h2>Supporters <span class="muted" id="w-count"></span></h2><div id="wall"><p class="muted">Loading…</p></div></div>' +
     '<a class="backlink" href="#/">← Make your own TipJar page</a>';
@@ -260,36 +292,78 @@ function showQR() {
   document.getElementById('paycard').scrollIntoView({ behavior: 'smooth' });
 }
 
-async function markPaid() {
-  hideErr('e2');
+function askUTR() {
+  document.getElementById('utrbox').classList.remove('hidden');
+  document.getElementById('b-paid').classList.add('hidden');
+  document.getElementById('utrbox').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  document.getElementById('t-utr').focus();
+}
+
+var justTipped = false;
+async function submitTip() {
+  hideErr('e3');
+  var utr = document.getElementById('t-utr').value.replace(/\D/g, '');
+  if (!/^\d{12}$/.test(utr)) return showErr('e3', 'That doesn\'t look like a UTR — it\'s exactly 12 digits, on your payment success screen.');
   var name = document.getElementById('t-name').value.trim() || 'Anonymous fan';
   var msg = document.getElementById('t-msg').value.trim();
-  var btn = document.getElementById('b-paid'); btn.disabled = true; btn.textContent = 'Saving…';
+  var btn = document.getElementById('b-wall'); btn.disabled = true; btn.textContent = 'Adding…';
   try {
     var res = await sb.from('tips').insert({
       creator_id: currentCreator.id, supporter_name: name.slice(0, 40),
-      amount: selAmount, message: msg ? msg.slice(0, 140) : null
+      amount: selAmount, message: msg ? msg.slice(0, 140) : null, utr: utr
     });
     if (res.error) throw res.error;
+    justTipped = true;
     await refreshTips();
+    celebrate(name, selAmount);
     document.getElementById('paycard').classList.add('hidden');
+    document.getElementById('utrbox').classList.add('hidden');
+    document.getElementById('b-paid').classList.remove('hidden');
     document.getElementById('t-name').value = '';
     document.getElementById('t-msg').value = '';
     document.getElementById('t-custom').value = '';
+    document.getElementById('t-utr').value = '';
     selAmount = 0;
     var els = document.querySelectorAll('.amt');
     for (var i = 0; i < els.length; i++) els[i].classList.remove('sel');
-    window.scrollTo({ top: document.getElementById('wall').offsetTop - 80, behavior: 'smooth' });
   } catch (e) {
-    showErr('e2', 'Could not save the tip. Please try again.');
+    if (e && e.code === '23505') showErr('e3', 'That UTR was already used for another tip. Double-check the number and try again.');
+    else showErr('e3', 'Could not save the tip. Please try again.');
   }
-  btn.disabled = false; btn.textContent = "I've paid ✓";
+  btn.disabled = false; btn.textContent = 'Add me to the wall 🎉';
+}
+
+function celebrate(name, amount) {
+  var c = currentCreator;
+  var ov = document.createElement('div');
+  ov.id = 'celebrate';
+  var pieces = '', i, x, d, dur, col;
+  var cols = ['#EA580C', '#F59E0B', '#16a34a', '#ffd9a0', '#ffffff'];
+  for (i = 0; i < 22; i++) {
+    x = Math.random() * 100; d = (Math.random() * 0.9).toFixed(2); dur = (2 + Math.random() * 1.6).toFixed(2);
+    pieces += '<span class="coin" style="left:' + x + '%;animation-delay:' + d + 's;animation-duration:' + dur + 's">' + (i % 3 ? '🪙' : '₹') + '</span>';
+  }
+  for (i = 0; i < 30; i++) {
+    x = Math.random() * 100; d = (Math.random() * 0.7).toFixed(2); dur = (2.2 + Math.random() * 1.8).toFixed(2); col = cols[i % cols.length];
+    pieces += '<span class="confetti" style="left:' + x + '%;background:' + col + ';animation-delay:' + d + 's;animation-duration:' + dur + 's"></span>';
+  }
+  ov.innerHTML = pieces + '<div><div class="cjar">🫙</div><h2>You\'re on the wall, ' + esc(name) + '!</h2>' +
+    '<p>' + rs(amount) + ' to ' + esc(c.display_name) + ' 🎉<br>They\'ll confirm it when they\'re back — nothing more to do.</p>' +
+    '<p style="font-size:13px;opacity:.75">Tap anywhere to continue</p></div>';
+  document.body.appendChild(ov);
+  function done() {
+    if (ov.parentNode) ov.parentNode.removeChild(ov);
+    var w = document.getElementById('wall');
+    if (w) window.scrollTo({ top: w.offsetTop - 80, behavior: 'smooth' });
+  }
+  ov.addEventListener('click', done);
+  setTimeout(done, 3400);
 }
 
 async function refreshTips() {
   if (!currentCreator) return;
   try {
-    var res = await sb.from('tips').select('supporter_name,amount,message,created_at')
+    var res = await sb.from('tips').select('supporter_name,amount,message,created_at,verified')
       .eq('creator_id', currentCreator.id).order('created_at', { ascending: false }).limit(50);
     if (res.error) throw res.error;
     currentTips = res.data || [];
@@ -299,21 +373,70 @@ async function refreshTips() {
     if (!currentTips.length) {
       wall.innerHTML = '<p class="muted">No tips yet — be the first 🙂</p>';
     } else {
-      wall.innerHTML = currentTips.map(function (t) {
-        return '<div class="wallitem"><span class="who">' + esc(t.supporter_name) + '</span> ' +
+      wall.innerHTML = currentTips.map(function (t, idx) {
+        return '<div class="wallitem' + (justTipped && idx === 0 ? ' newtip' : '') + '"><span class="who">' + esc(t.supporter_name) + '</span> ' +
                '<span class="amt2">' + rs(t.amount) + '</span>' +
+               (t.verified ? '<span class="tag ok">✓ confirmed</span>' : '<span class="tag wait">awaiting confirmation</span>') +
                (t.message ? '<div class="msg">“' + esc(t.message) + '”</div>' : '') +
                '<div class="when">' + timeAgo(t.created_at) + '</div></div>';
       }).join('');
+      justTipped = false;
     }
     if (currentCreator.goal_amount) {
-      var raised = currentTips.reduce(function (s, t) { return s + t.amount; }, 0);
+      var raised = currentTips.reduce(function (s, t) { return s + (t.verified ? t.amount : 0); }, 0);
+      var pendingAmt = currentTips.reduce(function (s, t) { return s + (t.verified ? 0 : t.amount); }, 0);
       var pct = Math.min(100, Math.round(raised / currentCreator.goal_amount * 100));
       var bar = document.getElementById('g-bar'), rg = document.getElementById('g-raised');
+      var gp = document.getElementById('g-pending');
       if (bar) bar.style.width = pct + '%';
       if (rg) rg.textContent = rs(raised);
+      if (gp) gp.textContent = pendingAmt > 0 ? '+' + rs(pendingAmt) + ' awaiting confirmation' : '';
     }
   } catch (e) { /* keep old wall on transient errors */ }
+}
+
+/* ---------- creator confirm page ---------- */
+async function renderConfirm(token) {
+  app.innerHTML = '<p class="center muted">Loading…</p>';
+  try {
+    var res = await sb.rpc('pending_tips', { p_token: token });
+    if (res.error) throw res.error;
+    var tips = res.data || [];
+    if (!tips.length) {
+      app.innerHTML = '<div class="card center"><h2>All caught up 🎉</h2>' +
+        '<p class="muted">No tips are waiting for confirmation right now. When a supporter tips you, they\'ll show up here — open this same link any time (no login needed). Keep the link private and saved!</p>' +
+        '<a class="backlink" href="#/">← TipJar home</a></div>';
+      return;
+    }
+    app.innerHTML = '<div class="card"><h2>Confirm your tips</h2>' +
+      '<p class="muted">These supporters say they paid you. Check your UPI app — the UTR should match a real payment — then confirm. Only confirmed tips count toward your goal.</p>' +
+      tips.map(function (t) {
+        return '<div class="wallitem"><span class="who">' + esc(t.supporter_name) + '</span> ' +
+               '<span class="amt2">' + rs(t.amount) + '</span>' +
+               (t.message ? '<div class="msg">“' + esc(t.message) + '”</div>' : '') +
+               '<div class="when">UTR ' + esc(t.utr || '—') + ' · ' + timeAgo(t.created_at) + '</div></div>';
+      }).join('') +
+      '<div class="err" id="e4"></div>' +
+      '<button class="btn" id="b-confirm" onclick="doConfirmAll(\'' + token + '\')">Confirm all ✓</button></div>' +
+      '<a class="backlink" href="#/">← TipJar home</a>';
+  } catch (e) {
+    app.innerHTML = '<div class="card center"><h2>Link not working</h2>' +
+      '<p class="muted">This confirmation link looks invalid. Check you copied the whole link from your signup page.</p>' +
+      '<a class="backlink" href="#/">← TipJar home</a></div>';
+  }
+}
+async function doConfirmAll(token) {
+  var btn = document.getElementById('b-confirm'); btn.disabled = true; btn.textContent = 'Confirming…';
+  try {
+    var res = await sb.rpc('confirm_all_tips', { p_token: token });
+    if (res.error) throw res.error;
+    app.innerHTML = '<div class="card center"><h2>Done 🎉</h2>' +
+      '<p class="muted">' + res.data + ' tip(s) confirmed. They now count toward your goal.</p>' +
+      '<a class="backlink" href="#/">← TipJar home</a></div>';
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Confirm all ✓';
+    showErr('e4', 'Something went wrong. Please try again.');
+  }
 }
 
 route();
